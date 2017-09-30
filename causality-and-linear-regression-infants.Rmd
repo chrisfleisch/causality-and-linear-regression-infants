@@ -1,0 +1,420 @@
+---
+title: 'Lab 4: Does Prenatal Care Improve Infant Health?'
+author: 'Chris Fleisch, Victoria Baker, Frederic Suares'
+date: "December 13, 2016"
+output: pdf_document
+geometry: margin=.75in
+fontsize: 11pt
+---
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# load up our libraries
+library(car)
+library(lmtest)
+library(sandwich)
+library(stargazer)
+library(dplyr)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+load("bwght_w203.RData")
+# use something other than 'data'
+bdata <- data
+desc
+dim(bdata)
+summary(bdata)
+str(bdata)
+head(bdata)
+```
+
+# Introduction
+
+It is recommended that a new mother go to the doctor on a scheduled number of prenatal visits when she becomes pregnant. There are many contributing factors that may increase the number of visits: if the mother is 35 or older or has a pre-existing health condition, which is not captured in our dataset [1]. Mothers that don't get prenatal care are 3 times more likely to have a baby with low birth weight [1]. Most babies are between 2,500 grams and 4,000 grams, which is considered healthy [2]. Other variations in weight might still be considered normal, but could require extra attention from doctors. This study will attempt to investigate whether prenatal care has an effect on birth weight for newborn infants. 
+
+#Exploratory Data Analysis
+Our exploratory data analysis begins with a look at the focus of this study, birth weight.
+
+```{r}
+summary(bdata$bwght)
+hist(bdata$bwght, breaks = 20, main = "Histogram of birth weight", xlab = NULL)
+```
+
+Birth weight is relatively normally distributed with some left skew. We will create a new variable for birth weights based on different birth weight classes as described by the descriptions in the data. There are no null values in birth weight.
+
+```{r}
+bdata$weight.class <- cut(bdata$bwght, c(0,1500,2000,4000,Inf), 
+                          labels=c('very low', 'low', 'normal', 'over weight'))
+summary(bdata$weight.class)
+```
+
+The majority of our data is in the normal weight range. Next, we want to take a look at indicators of infant health. 1 minute and 5 minute APGAR scores do not seem to be good indicators of overall infant health. Further background investigation shows that 1 minute APGAR scores are mainly to determine if the newborn needs help breathing or is having heart trouble. 5 minute APGAR scores lower than 7 are typically caused by other factors not captured with this data, such as difficulties in childbirth or fluid in the baby's airway [3]. Furthermore, most of the time a low 1 minute APGAR score will normalize by the time the 5 minute score is taken. APGAR scores are not meant to be an indication of future health. They test the physical condition of the infant and determine if emergency care is needed. For this reason, it is unlikely we will be able to show strong associations between birth weight, prenatal care, and APGAR tests since they are not good estimators of an infant's health. Birth weight is likely the better outcome variable for this data set.
+
+Let's look at number of prenatal visits. 
+
+```{r}
+par(mfrow=c(1, 1))
+summary(bdata$npvis)
+hist(bdata$npvis, breaks = 20, main = "Histogram of # prenatal visits", cex.main = .8,
+     cex.lab = .8, xlab = NULL)
+```
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+bdata %>% group_by(npvis) %>% summarise(total = n()) %>% arrange(desc(total))
+```
+```{r}
+plot(bdata$npvis, bdata$bwght, main = "Birth weight and number of prenatal visits",
+     xlab = "Number of prenatal visits", ylab = "Birth weight", cex.main = .8,
+     cex.lab = .8)
+abline(lm(bwght ~ npvis, data = bdata), col = "blue")
+cor(bdata$bwght, bdata$npvis, use = "complete")
+par(mfrow=c(1,1))
+boxplot(bdata$npvis ~ bdata$weight.class, 
+        main = "Boxplot of prenatal visits",
+        ylab = "Number of prenatal visits", xlab = "Weight")
+```
+
+The histogram of prenatal visits shows a large spike around 12 visits and then falls off to each side with some positive skew. The plot shows that the number of visits is associated with an increase in birth weight. The box plot shows that the mean number of prenatal visits increases for each weight class of the infant. There is a positive correlation between number of visits and birth weight. Number of visits will be a good variable to have in our model.
+
+```{r fig.height=7, fig.width=7.5}
+par(mfrow=c(2,2))
+summary(bdata$monpre)
+hist(bdata$monpre, breaks = 0:10-.5, main = "Histogram of month prenatal care began",
+     xlab = NULL, cex.main = .8, cex.lab = .8)
+plot(bdata$monpre, bdata$bwght, main = "Birth weight vs month prenatal care began",
+     ylab = "Birth weight", xlab = "Month prenatal care began", cex.main = .8,
+     cex.lab = .8)
+abline(lm(bwght ~ monpre, data = bdata), col = "blue")
+cor(bdata$bwght, bdata$monpre, use = "complete")
+```
+```{r}
+par(mfrow=c(1,1))
+# early vs late starts
+bdata$start.v[bdata$monpre > 0 & bdata$monpre <= 3] <- 'early'
+bdata$start.v[bdata$monpre > 3 & bdata$monpre <= 6] <- 'mid'
+bdata$start.v[bdata$monpre > 6 | bdata$monpre <= 0] <- 'late'
+bdata$start.v <- factor(bdata$start.v, levels = c('early', 'mid', 'late'))
+summary(bdata$start.v)
+boxplot(bdata$bwght~bdata$start.v, main = "Birth weight and start of prenatal visits",
+        xlab = 'Start of prenatal visits', ylab = 'Birth weight',
+        cex.main = .8, cex.lab = .8, cex.axis = .8)
+```
+
+The histogram of month prenatal care began is skewed positive. This is expected because a mother may not know she is pregnant for the first couple months. The month started does not seem to be correlated with birth weight. It has an extremely small correlation value and very little slope on our line. The box plot shows that the average birth weight declines slightly as it goes to the right but on average there is a healthy birth weight for the 3 categories of start time. The ones that went earlier have the most cases of lower birth weights. This suggests that the mothers might have known there was a problem from the beginning and went to prenatal care early to try and help their situation. This doesn't appear to be a good indicator of birth weight and might also have some collinearity with number of prenatal visits.
+
+```{r}
+par(mfrow=c(1,2))
+# make a new variable visits/per month
+bdata$pnvpm <- bdata$npvis/(9 - bdata$monpre)
+# remove the one Inf value
+bdata$pnvpm[is.infinite(bdata$pnvpm)] <- NA
+summary(bdata$pnvpm)
+hist(bdata$pnvpm, breaks = 50, main = "Histogram of prenatal visits per month", 
+     xlab = NULL, cex.main = .8, cex.lab = .8)
+plot(bdata$pnvpm, bdata$bwght, 
+     main = "Birth weight and number of prenatal visits per month",
+     cex.main = .8, cex.lab = .8, xlab = "Number of prenatal visits per month",
+     ylab = "Birth weight")
+abline(lm(bwght ~ pnvpm, data = bdata), col = "blue")
+cor(bdata$bwght, bdata$pnvpm, use = 'complete')
+```
+
+This new variable captures the average number of prenatal visits per month. The recommended schedule is that the number of visits should increase as the pregnancy progresses [4]. This variable attempts to examine the association between number of visits per month and infant health. The histogram shows a concentration around the mean and median with a few extreme outliers. The plot shows a positive slope between birth weight and prenatal visits per month. There's a lot of data concentrated around the mean, so this may not be a good variable to include in the model. It also has multicollinearity with number of prenatal visits and month prenatal care began, which are probably stronger variables to include.
+
+```{r}
+par(mfrow=c(1, 2))
+summary(bdata$fage)
+hist(bdata$fage, breaks = 50, main = "Histogram of father's age", cex.main = .8,
+     xlab = NULL, cex.lab = .8)
+plot(bdata$fage, bdata$bwght, main = "Birth weight vs father's age",
+     xlab = "Father's age", ylab = "Birth weight", cex.main = .8,
+     cex.lab = .8)
+abline(lm(bwght ~ fage, data = bdata), col = "blue")
+cor(bdata$fage, bdata$bwght, use = "complete")
+```
+
+The father's age has a distribution that is approaching normal with some positive skew and attenuation around 18. There is a slight positive correlation between father's age and birth weight. It is unexpected to have any influence on the birth weight, which might make it a weak variable to include. It may also have some multicollinearity with the mother's age.
+
+```{r}
+par(mfrow = c(1, 2))
+summary(bdata$mage)
+hist(bdata$mage, breaks = 30, main = "Histogram of mother's age", cex.main = .8,
+     cex.lab = .8, xlab = NULL)
+plot(bdata$mage, bdata$bwght, main = "Birth weight vs mother's age",
+     xlab = "Mother's age", ylab = "Birth weight", cex.main = .8,
+     cex.lab = .8)
+abline(lm(bwght ~ mage, data = bdata), col = "blue")
+my.data <- bdata[complete.cases(bdata[, c('bwght', 'mage')]),]
+lines(sort(my.data$mage),
+      predict(lm(bwght ~ mage + I(mage^2), data = my.data))[order(my.data$mage)],
+      col="red")
+cor(bdata$mage, bdata$bwght, use = "complete")
+par(mfrow = c(1, 1))
+bdata$mage.class <- cut(bdata$mage, c(0,21,40,Inf), 
+                        labels=c('20 or younger', '21-39', '40 or older'), 
+                        right=FALSE)
+summary(bdata$mage.class)
+plot(bdata$mage.class, bdata$bwght, main = "Birth weight vs mother's age",
+     xlab = "Mother's age", ylab = "Birth weight", cex.main = .8,
+     cex.lab = .8, cex.axis = .8)
+cor(bdata$mage, bdata$npvis, use = "complete")
+boxplot(bdata$npvis ~ bdata$mage.class, main = "Number of prenatal visits and age group",
+        xlab = "Mother's age", ylab = "Number of prenatal visits", cex.main = .8,
+        cex.lab = .8, cex.axis = .8)
+```
+
+The mother's age has a nice normal distribution. The plot shows a fairly flat line and only a slight positive correlation. When we add a squared term to the mother's age we get a line that is lower at the extremes. This might help us capture differences in birth weight that are associated with younger and older mothers seen in the box plot. Teen mothers and older mothers are more at risk for lower birth weights [6], but the mean ages for birth weights are pretty even across the different weight categories. Mother's $age^2$ will be a good variable to include our model. Mother's age also shows correlation with the number of visits. This is expected; as earlier stated, older mothers on average go to more prenatal visits and there could be multicollinearity between the mother's age and number of visits.
+
+```{r}
+par(mfrow = c(2, 2))
+summary(bdata$meduc)
+hist(bdata$meduc, main = "Histogram of mother's education", xlab = NULL,
+     cex.main = .8, cex.lab = .8)
+plot(bdata$meduc, bdata$npvis, main = "Mother's educ and number of prenatal visits",
+     xlab = "Mother's education in years", ylab = "Number of prenatal visits",
+     cex.main = .8, cex.lab = .8)
+abline(lm(npvis ~ meduc, data = bdata), col = "blue")
+cor(bdata$meduc, bdata$npvis, use = "complete")
+plot(bdata$meduc, bdata$bwght, main = "Mother's years of education and weight",
+        xlab = "Brith weight", ylab = "Mother's years of education", cex.main = .8,
+        cex.lab = .8, cex.axis = .5)
+abline(lm(bwght ~ meduc, data = bdata), col = "blue")
+cor(bdata$meduc, bdata$bwght, use = "complete")
+```
+
+The histogram of mother's education shows two spikes at 12 and 16 years of age. Those are most likely graduation effects. There's not a lot of sample data for lower years of education. The plot shows that the more educated a mother is, the higher the number of prenatal visits. We might want to include mother's education in our model to account for differences in prenatal visits. The plot of mother's education and birth weight does not indicate that there's much correlation in mother's education and birth weight. So, this would not be a good variable to include in our model.
+
+```{r}
+par(mfrow = c(1, 2))
+summary(bdata$cigs)
+hist(bdata$cigs, breaks = 30, cex.main = .8, cex.lab = .8,
+     main = "Histogram of cigs", xlab = NULL)
+plot(bdata$cigs, bdata$bwght, main = "Birth weight and avg cigarettes smoked a day",
+     xlab = "Avg cigs smoke a day", ylab = "Birth weight",
+     cex.main = .8, cex.lab = .8)
+abline(lm(bwght ~ cigs, data = bdata), col = "blue")
+cor(bdata$bwght, bdata$cigs, use = 'complete')
+bdata$smokes <- cut(bdata$cigs, c(0,1,Inf), labels=c('Non-Smoker', 'Smoker'), right=FALSE)
+summary(bdata$smokes)
+par(mfrow = c(1, 1))
+boxplot(bdata$bwght~bdata$smokes, main = "Birth weight vs Smoker/Non-Smoker",
+     ylab = "Birth weight", cex.main = .8, cex.lab = .8)
+boxplot(bdata$npvis~bdata$smokes, main = "Number of prenatal visits and smokes",
+        ylab = "Number of prenatal visits", cex.main = .8, cex.lab = .8)
+```
+
+The histogram for cigarettes is heavily skewed right with most of the data at 0. The plot shows bands of data with some noise in between. The regression line shows that birth weight decreases as number of cigarettes smoked per day increases. There could be some measurement error in this data (likely asked people to guess how many they smoked on average) that may increase the variance of our response variable and introduce bias that might reduce the real effects of smoking. We converted the variable to an indicator for smoking to reduce the measurement errors. Smoker birth weight is much lower as displayed in the first box plot. Smokers on average also have slightly lower number of prenatal visits on average seen in the second box plot. This would be a good variable to include since we have a large number of observations and smoking has been associated with lower birth weights in other studies.
+
+```{r}
+par(mfrow = c(1, 2))
+summary(bdata$drink)
+hist(bdata$drink, breaks = 30, cex.main = .8, cex.lab = .8,
+     main = "Histogram of drinks per week", xlab = NULL)
+plot(bdata$drink, bdata$bwght, main = "Birth weight and drinks per week",
+     xlab = "Avg drinks a week", ylab = "Birth weight",
+     cex.main = .8, cex.lab = .8)
+abline(lm(bwght ~ drink, data = bdata), col = "blue")
+cor(bdata$bwght, bdata$drink, use = 'complete')
+bdata$drinks <- cut(bdata$drink, c(0,1,Inf), labels=c('No', 'Yes'), right=FALSE)
+summary(bdata$drinks)
+par(mfrow = c(1, 1))
+boxplot(bdata$bwght~bdata$drinks, main = "Birth weight vs drinks or not",
+     ylab = "Birth weight", cex.main = .8, cex.lab = .8)
+boxplot(bdata$npvis~bdata$drinks, main = "Number of prenatal visits and drinks or not",
+        ylab = "Number of prenatal visits", cex.main = .8, cex.lab = .8)
+```
+
+The histogram for drinks is heavily skewed right with most of the data at 0. The plot shows not a lot of data to the right. The regression line shows that birth weight decreases as number of drinks per week increases. There could be some measurement error in this data like the smoking variable that may increase the variance of our response variable and introduce bias that might reduce the real effects of drinking. We converted the variable to an indicator for drinks to reduce the measurement errors. The birth weight for drinkers is lower as displayed in the first box plot. Drinkers on average also have a higher number of prenatal visits on average as seen in the second box plot. This could be a good variable to include since drinking is associated with lower birth weights, but we don't have a lot data here.
+
+```{r}
+# ethnic differences
+bdata$race[bdata$mblck == 1 & bdata$fblck == 1] <- 'black'
+bdata$race[bdata$mwhte == 1 & bdata$fwhte == 1] <- 'white'
+bdata$race[bdata$moth == 1 & bdata$foth == 1] <- 'other'
+bdata$race <- as.factor(bdata$race)
+summary(bdata$race)
+par(mfrow = c(1, 2))
+boxplot(bdata$bwght ~ bdata$race, main = "Boxplot of birth weight and race",
+        xlab = "Race", ylab = "Birth weight", cex.main = .8, cex.lab = .8, cex.axis = .5)
+boxplot(bdata$npvis ~ bdata$race, main = "Boxplot of prenatal visits and race",
+        xlab = "Race", ylab = "Number of prenatal visits",
+        cex.main = .8, cex.lab = .8, cex.axis = .5)
+```
+
+There's a lot more data for white parents in this data set compared to black and other. The box plot shows that parents falling under the other race have lower mean birth weights than black and white parents. However, the box plot of prenatal visits and race shows that the mean number of visits for each race is about the same.  Background research yielded a study found that other races had lower birth weights [5]. Because of this, race would be a good variable to include in the model to account for the ethnic differences in infant sizes.
+
+#Modelling
+For this study, we have chosen three model specifications. The first model has only the explanatory variables of key interest, birth weight and number of prenatal visits.
+
+```{r}
+# model with number of prenatal visits
+m1 <- lm(bwght ~ npvis, data = bdata)
+```
+
+The second group of models includes only covariates that we believe increase the accuracy of our results without introducing bias, as covered in our exploratory data analysis.
+
+```{r}
+m2 <- lm(bwght ~ npvis + race, data = bdata)
+m3 <- lm(bwght ~ npvis + race + smokes, data = bdata)
+m4 <- lm(bwght ~ npvis + smokes + mage + I(mage^2) + race, data = bdata)
+```
+
+The third model includes the previous covariates, but also covariates that may be problematic--mother's education, father's age, and drinks. Instead of splitting the variables more logically across multiple models, all of these estimators are together in one model.
+
+```{r}
+m5 <- lm(bwght ~ npvis + pnvpm + race + fage + mage + I(mage^2) + smokes + meduc + drinks, 
+         data = bdata)
+```
+
+Let's examine the CLM assumptions of the first model:
+
+```{r fig.height=7, fig.width=7.5}
+par(mfrow = c(2,2))
+plot(m1, cex.main = .8, cex.lab = .8, cex.axis = .8)
+```
+
+CLM.1 - Our coefficients are assumed to be linear, but our independent variables can take on different transformations like polynomials or log. This is not a strong assumption and it is not restrictive, because we can represent any populalation plus some error.
+
+CLM.2 - Our data is assumed to be random and iid. We have no indication as to where the data is from or how it was collected. We didn't see any indications that the data had any clustering or groupings. If the data was not random, then our estimates will not be as precise and we would need to account for this using clustered standard errors or another technique. For our purposes we'll assume it is random and iid.
+
+CLM.3 - We did not find any of variables to be linear combinations of each other. 
+
+CLM.4 - The residuals vs fitted plot shows a the red line above zero on the left and moves more negative as it goes to the right. We do not meet the zero conditional mean for this model. We can not assume that our estimators are unbiased.
+
+CLM.4' - Since we did not meet the zero conditional mean, we can assume we're now making an associative model and get exogeneity. This is a weaker assumption than zero condiational mean. Our estimators are no longer unbiased, but because we have a large sample they will be consistent. As our n goes to infinity, the bias should go to zero. We have over 1800 observations which should be sufficent to get consistency.
+
+CLM.5 - The scale-location plot does not show a straight line. And the band of data on the residuals vs. fitted plot is not even all the way across. Both plots indicate that we have heteroskedasticity. We can correct for this using robust standard errors which will be more conservative.
+
+CLM.6 - The QQ-plot does not follow a nice diagonal line in the lower left likley due to the skewness in the birth weight. This means we have a violation of normality of errors. We have a large data set so we can rely on asymptoics and we don't need to correct for this.
+
+There are also no data points beyond Cook's distance so we will not remove any of the data points.
+
+```{r fig.height=7, fig.width=7.5}
+par(mfrow = c(2,2))
+plot(m2, cex.main = .8, cex.lab = .8, cex.axis = .8)
+```
+
+The m2 model has all of the same issues and resolutions as m1.
+
+```{r fig.height=7, fig.width=7.5}
+par(mfrow = c(2,2))
+plot(m3, cex.main = .8, cex.lab = .8, cex.axis = .8)
+```
+
+The plots for m3 have similar output as m2.
+
+```{r fig.height=7, fig.width=7.5}
+par(mfrow = c(2,2))
+plot(m4, cex.main = .8, cex.lab = .8, cex.axis = .8)
+cor.test(bdata$bwght, I(bdata$mage^2), method="pearson")
+cor.test(bdata$bwght, bdata$mage, method="pearson")
+vif(m4)
+```
+
+This model (m4) meets the zero conditional mean assumption. We now have unbiased estimators and no longer need to rely on our assumption of exogeneity. However, there is some multicollinearity between mother's age/mother's age squared and birth weight. We've added in the $age^2$ variable to account for the non-linear relationship between age and birth weight. We don't need to worry about this. The p-value for $age^2$ will not affected by the multicollinearity.
+
+```{r fig.height=7, fig.width=7.5}
+par(mfrow = c(2,2))
+plot(m5, cex.main = .8, cex.lab = .8, cex.axis = .8)
+bptest(m5)
+```
+
+The fifth model, m5, has all the same issues as m4; however, a Breusch-Pagan test indicates that there isn't enough evidence to confirm the presence of heteroskedasticity, unlike the previous models. Since we have a large sample size we would need to see very large deviations before getting a statistically significant result. Since it’s good practice and the evidence of our plots shows heteroskedasticity we’ll use the robust standard errors.
+
+```{r}
+# generate the robust standard errors
+se.m1 = sqrt(diag(vcovHC(m1)))
+se.m2 = sqrt(diag(vcovHC(m2)))
+se.m3 = sqrt(diag(vcovHC(m3)))
+se.m4 = sqrt(diag(vcovHC(m4)))
+se.m5 = sqrt(diag(vcovHC(m5)))
+```
+
+```{r, results='asis'}
+# results='asis'
+stargazer(m1, m2, m3, m4, m5,
+          type = "latex",
+          se = list(se.m1, se.m2, se.m3, se.m4, se.m5),
+          df = FALSE,
+          star.cutoffs = c(.05, .01, .001), title = "Results",
+          table.placement = '!h')
+```
+
+Assessments for statistical and practical significance for each model are as follows:
+
+m1 - We see statistical significance for the number of prenatal visits at the .001 level. This model predicts that mothers should see an increase in birth weight of ~16 grams for each prenatal visit. For 10 visits, the mother could expect to see the weight of the infant increase by 160 grams. Considering that the infant should be betwen 2500 and 4000 grams, a difference of 160 doesn't seem to make that much of a difference. If the mother has reason to believe that the infant will have a very low birth weight, then the difference could be more significant for her.
+
+m2 - We still have high statistical significance on our prenatal visits variable and a practical significance of ~16 grams per visit. We've added the categorical race variable. For race other we have statistical significance at the .05 level. Race other has a practical significance of reducing the predicted weight by 171 grams. Race white is not statistically signficant but has some practical effect of increasing weight by 59 grams.
+
+m3 - We added the smoker indicator which has very high statistical significance and a practical significance of reducing weight by 205 grams.
+
+m4 - We added mother's age and mother's $age^2$. These both are statistically significant at the .05 level. Age has a practical significance of increasing birth weight by 64 grams for each year of age. The $age^2$ variable has some practical significance of reducing the birth weight for different ages of mothers, since birth weight doesn't just increase linearly. This helps to take into account the lower birth weights at the extremes of the age range.
+
+m5 - This model includes the prenatal visits per month variable which has no practical or statistical significance. It has multicollinearity with number of visits. The better variable to include is number of prenatal visits.
+
+Overall, the number of prenatal visits is statistically and practically significant. Father's age is statistically significant, but has very little practical significance. This variable has some collinearity with mother's age, so it could be absorbing some of the effects of mother's age. Mother's education was not statistically significant or practically significant. The smoking variable was statistically significant, but the drink variable was not statistically significant. It had very little practical significance by reducing weight by 10 grams per 1 increase in drink. Mother's age has now lost statistical significance, but maintains some practical significance.
+
+Adding these variables seems to have reduced the effects of our variable of interest and alone they don't have much practical or statistical significance.
+
+```{r}
+linearHypothesis(m5, c("pnvpm = 0", "fage = 0", "meduc = 0", "drinksYes = 0"), vcov = vcovHC)
+```
+
+Together, the additional variables don't have statistical significance and should be removed from the model.
+
+#Causality
+These results that prenatal care increases health cannot be interpretted causally. We don't have any background on how this study was conducted, but it does not look like a randomized study that assigned prenatal care to mothers. It also does not seem likely that prenatal care was assigned in a functionally random process, which would not make it an instrumental variable. Most theories behind birth weight do not relate to the number of prenatal visits. We also don't know what happened at the prenatal visits. Ideally every mother should follow the doctor's advice, but we don't know how many ignored the doctor's orders. It's difficult for us to say that an extra visit would see an increase in 15 grams of birth weight, for example.  
+
+Birth weight has more to do with other factors like mother's age, race, and smoking. It could be affected by variables not captured by our data. Other factors like genetics, mother's weight, income, proximity to health care, proximity of birth to due date, and pre-existing medical problems would be good variables to include in our analysis.
+
+$bwght = \beta_0 + \beta_1 pnvis + u$, omitted: genetics
+
+beta_2 + (genetics), gamma_1 - (correlation between genetics, pnvis is negative) = -  
+negative omitted bias, towards zero
+
+$bwght = \beta_0 + \beta_1 pnvis + u$, omitted: mother's weight
+
+beta_2 + (weight), gamma_1 - (correlation between pnvis, mother's weight is negative) = -  
+negative omitted bias, towards zero
+
+$bwght = \beta_0 + \beta_1 pnvis + u$, omitted: income
+
+beta_2 + (income), gamma_1 + (correlation between pnvis, income is positive) = +  
+positive omitted bias, away from zero
+
+$bwght = \beta_0 + \beta_1 pnvis + u$, omitted: proximity to health care
+
+beta_2 + (proximity), gamma_1 + (correlation between pnvis, proximity is positive) = +  
+positive omitted bias, away from zero
+
+$bwght = \beta_0 + \beta_1 pnvis + u$, omitted: pre-existing medical condition
+
+beta_2 - (condition), gamma_1 + (correlation of pnvis, pre-exist. medical condition is positive) = -  
+negative omitted bias, towards zero
+
+$bwght = \beta_0 + \beta_1 pnvis + u$, omitted: proximity of birth to due date
+
+beta_2 + (proximity), gamma_1 + ( correlation between pnvis, proximity is positive) = +  
+positive omitted bias, away from zero
+
+Including the smoking and drinks variables may bias the causal effects of prenatal care visits. By going to prenatal care you would expect to see some mothers reduce or stop their smoking and drinking. By including these variables, you take away the greater effect prenatal visits may have had in playing a role in a healthy birth weight.
+
+#Conclusion
+This analysis examined the effects of several variables on birth weight using 5 different linear models. Each model was tested for CLM assumptions and adjusted accordingly. Overall, the number of prenatal visits was statistically and practically significant. We also found strong evidence that race other and smoking have high statistical significance and very high practical significance. Mother's age was transformed to account for the different ages and associated birth weights and found to be statistically significant and have practical significance.
+
+We concluded the results that prenatal care increases health cannot be interpreted causally. It's unlikely that prenatal care was assigned in a functionally random process that would make it an instrumental variable. Most theories behind birth weight do not relate to the number of prenatal visits and we do not know what happened as a result of the prenatal visits.
+
+Several factors were examined for omitted variable bias such as genetics, mother's weight, income, proximity to health care, proximity of birth to due date, and pre-existing medical problems. Including certain variables may bias the causal effects of prenatal care visits. Ultimately, by including too many variables we risk taking away the greater effect prenatal visits may have had in playing a role in a healthy birth weight.
+
+\pagebreak
+
+#Works Cited
+[1]	"How often do I need prenatal visits?," in WebMD, WebMD, 2016. [Online]. Available: http://www.webmd.com/baby/how-often-do-i-need-prenatal-visits. Accessed: Dec. 11, 2016.
+
+[2]	andytsh, "What affects a baby’s birth weight?," Pregnancy & Baby, 2014. [Online]. Available: http://www.pregnancyandbaby.com/baby/articles/940601/what-affects-a-babys-birth-weight. Accessed: Dec. 11, 2016.
+
+[3]	"Apgar score," 2016. [Online]. Available: https://medlineplus.gov/ency/article/003402.htm. Accessed: Dec. 11, 2016.
+
+[4]	"How often do I need prenatal visits?," in WebMD, WebMD, 2016. [Online]. Available: http://www.webmd.com/baby/how-often-do-i-need-prenatal-visits. Accessed: Dec. 11, 2016.
+
+[5]	"Racial differences in birth weight of term infants in a northern California population," vol. 22, no. 3, Apr. 2002. [Online]. Available: http://www.nature.com/jp/journal/v22/n3/full/7210703a.html. Accessed: Dec. 11, 2016.
+
+[6] Reichman, Nancy E., and Julien O. Teitler. “Paternal Age as a Risk Factor for Low Birthweight.” American Journal of Public Health 96.5 (2006): 862–866. PMC. Web. 11 Dec. 2016. Available: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1470584/
